@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Towel Tornado Admin</title>
+    <style>
+      body {
+        background-color: #222222;
+        color: white;
+        font-family: Arial, sans-serif;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+      }
+      th, td {
+        padding: 10px;
+        text-align: left;
+        border-bottom: 1px solid #444444;
+      }
+      th {
+        background-color: #333333;
+      }
+      button {
+        padding: 10px 20px;
+        margin-right: 10px;
+        background-color: #555555;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #777777;
+      }
+      input[type="text"] {
+        padding: 10px;
+        width: 200px;
+      }
+      input[type="submit"] {
+        padding: 10px 20px;
+        background-color: #555555;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      input[type="submit"]:hover {
+        background-color: #777777;
+      }
+    </style>
+    <script>
+      var wsUri = "ws://" + location.host + "/ws";
+
+      // Web Socket functions:
+      function loadWindow() {
+        console.log("Loading window");
+        openWebsocket();
+      }
+
+      function openWebsocket() {
+        websocket = new WebSocket(wsUri);
+        websocket.onopen = function (evt) {
+          onOpen(evt);
+        };
+        websocket.onclose = function (evt) {
+          onClose(evt);
+        };
+        websocket.onmessage = function (evt) {
+          onMessage(evt);
+        };
+        websocket.onerror = function (evt) {
+          onError(evt);
+        };
+      }
+
+      function onOpen(evt) {
+        console.log("WebSocket Opened");
+
+        // Offer a little delay before asking (Firefox needed this)
+        setTimeout(function () {
+          websocket.send('{"SendHiScore": true}');
+        }, 100);
+      }
+
+      function onClose(evt) {
+        console.log("WebSocket Closed");
+        setTimeout(function () {
+          // trying to reconnect after 5 seconds.
+          openWebsocket();
+        }, 5000);
+      }
+
+      // Incoming WebSocket message from server:
+      function onMessage(evt) {
+        const obj = JSON.parse(evt.data);
+
+        if (obj.Ping) {
+          console.log("Ping from server");
+        }
+
+        if (obj.HiScore != null) {
+          renderHiScore(obj.HiScore);
+        }
+
+        // Only for debugging, comment out afterwards: (KS)
+        console.log(obj);
+      }
+
+      function onError(evt) {
+        console.log("ERROR: " + evt.data);
+      }
+
+      function renderHiScore(hiScores) {
+        var table = document.getElementById("hiScoreTable");
+        // Clear previous rows
+        table.innerHTML = "<tr><th>Name</th><th>Wind</th><th>Time</th></tr>";
+
+        // Render new rows
+        hiScores.forEach(function (entry) {
+          var row = table.insertRow();
+          var nameCell = row.insertCell(0);
+          var windCell = row.insertCell(1);
+          var timeCell = row.insertCell(2);
+
+          nameCell.innerHTML = `<span onclick="newGame('` + entry.Name + `')" style="cursor: pointer">` + entry.Name + `</span>`;
+          windCell.innerHTML = entry.Wind.toFixed(2) + " m/s";
+          timeCell.innerHTML = formatTime(entry.Time);
+        });
+      }
+
+      function formatTime(duration) {
+        var minutes = Math.floor(duration / 60000);
+        var seconds = ((duration % 60000) / 1000).toFixed(1);
+        return minutes + ":" + (seconds < 10 ? '0' : '') + seconds;
+      }
+
+      function newGame(theName)    {
+        websocket.send('{"NewGameName": "' + theName + '"}');
+      }
+
+      function showGame() {
+        websocket.send('{"ShowGame": true}');
+      }
+
+      function resetGameView() {
+        websocket.send('{"ResetGameView": true}');
+      }
+
+      function showHiScore() {
+        websocket.send('{"ShowHiScore": true}');
+      }
+
+      function startNewGame() {
+        var name = document.getElementById("gameNameInput").value;
+        websocket.send('{"NewGameName": "' + name + '"}');
+      }
+
+      window.addEventListener("load", loadWindow, false);
+    </script>
+  </head>
+  <body>
+    <h1>Towel Tornado Admin</h1>
+    <button onclick="showHiScore()">Hi Score</button>
+    <button onclick="showGame()">Game</button>
+    <button onclick="resetGameView()">Reset</button>
+    <br /><br />
+    <table id="hiScoreTable">
+      <tr>
+        <th>Name</th>
+        <th>Wind</th>
+        <th>Time</th>
+      </tr>
+    </table>
+    <form onsubmit="startNewGame(); return false;">
+      <input type="text" id="gameNameInput" placeholder="Enter game name" required />
+      <input type="submit" value="Start New Game" />
+    </form>
+  </body>
+</html>

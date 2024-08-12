@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Towel Tornado</title>
+    <style>
+      body {
+        background-color: #222222;
+        margin: 0 0 0 0;
+
+        /* Remove scrolling */
+        height: 100%;
+        overflow: hidden;
+        cursor: none;
+
+        user-select: none;
+      }
+
+      svg {
+        cursor: none;
+      }
+
+      #appcanvas {
+        /* Related to preserveAspectRatio="xMidYMid meet" */
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+
+        /* That no elements by default will pick up pointer events */
+        pointer-events: none;
+      }
+
+      /* remove last traces of text select - setting pointer-events to none is the other part. */
+      svg text {
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+      }
+    </style>
+    <script>
+      var wsUri = "ws://" + location.host + "/ws";
+
+      // *********************
+      // Web Socket functions:
+      // *********************
+      function loadWindow() {
+        console.log("Loading window");
+        openWebsocket();
+      }
+
+      function openWebsocket() {
+        websocket = new WebSocket(wsUri);
+        websocket.onopen = function (evt) {
+          onOpen(evt);
+        };
+        websocket.onclose = function (evt) {
+          onClose(evt);
+        };
+        websocket.onmessage = function (evt) {
+          onMessage(evt);
+        };
+        websocket.onerror = function (evt) {
+          onError(evt);
+        };
+      }
+
+      function onOpen(evt) {
+        console.log("Websocked Opened");
+
+        // Offer a little delay before asking (Firefox needed this)
+        setTimeout(function () {
+          websocket.send('{"SendHiScore": true}');
+        }, 100);
+      }
+
+      function onClose(evt) {
+        console.log("Websocked Closed");
+        setTimeout(function () {
+          // trying to reconnect after 5 seconds.
+          openWebsocket();
+        }, 5000);
+      }
+
+      // Incoming Websocket message from server:
+      function onMessage(evt) {
+        const obj = JSON.parse(evt.data);
+
+        if (obj.Ping) {
+          console.log("Ping from server");
+        }
+
+        // Responding to WindSpeed and Device Number:
+        if (obj.WindSpeed != null && obj.DeviceNumber != null) {
+          //console.log(obj.DeviceNumber+": "+ obj.WindSpeed);
+          setGauge(obj.DeviceNumber, obj.WindSpeed)      
+          setHat(obj.DeviceNumber, obj.WindSpeed)      
+          
+          if (obj.DeviceNumber >= 1 && obj.DeviceNumber <= 3) {
+            LastValues[obj.DeviceNumber-1] = obj.WindSpeed;
+            //var avg = (LastValues[0]+LastValues[1]+LastValues[2])/3;
+
+            for (var i = 0; i < 3; i++) {
+              if (TotalMax < LastValues[i])  {
+                TotalMax = LastValues[i];
+                setGauge(0, TotalMax);
+              }
+            }
+          }
+        }
+
+        // Show Hi-Score
+        if (obj.ShowHiScore)  {
+          stopGame();
+          showHiScore();
+        }
+
+        // Show Game
+        if (obj.ShowGame)  {
+          //resetGameBoard();
+          showGame();
+        }
+
+        // Reset Game View
+        if (obj.ResetGameView)  {
+          resetGameBoard();
+          showGame();
+        }
+
+        // Start Game:
+        if (obj.NewGameName != null && obj.NewGameName != "")  {
+          resetGameBoard();
+
+          GameName = obj.NewGameName;
+
+          document.getElementById('text_Name').textContent = obj.NewGameName;
+          document.getElementById('text_gauge0').textContent = "";
+
+          startGame();
+          showGame();
+        }
+        
+        if (obj.HiScore != null) {
+          for (var i = 0; i < 5; i++) { 
+            if (obj.HiScore[i] != null) {
+              document.getElementById('text_Name'+(i+1)).textContent = obj.HiScore[i].Name;
+              document.getElementById('text_Time'+(i+1)).textContent = (obj.HiScore[i].Time/1000).toFixed(2)+" s";
+              document.getElementById('text_Wind'+(i+1)).textContent = obj.HiScore[i].Wind.toFixed(2) + " m/s";
+            } else {
+              document.getElementById('text_Name'+(i+1)).textContent = "";
+              document.getElementById('text_Time'+(i+1)).textContent = "";
+              document.getElementById('text_Wind'+(i+1)).textContent = "";
+            }
+          }
+        }
+
+        // Only for debugging, comment out afterwards: (KS)
+       // console.log(obj);
+      }
+
+      var GameTimerID;
+      var GameName = "";
+      var GameTime = 0;
+      var StartTime;
+      function gameTimer() {
+        console.log(GameState)
+
+        switch(GameState) {
+          case "WAITING_FOR_NO_WIND":
+            document.getElementById('text_gauge0').textContent = "WAIT...";
+            if (LastValues[0]==0 && LastValues[1]==0 && LastValues[2]==0) {
+              GameState = "WAITING_FOR_WIND_TO_START";
+            }
+          break;
+          case "WAITING_FOR_WIND_TO_START":
+            document.getElementById('text_gauge0').textContent = "Ready!";
+            if (LastValues[0]>0 || LastValues[1]>0 || LastValues[2]>0) {
+              StartTime = Date.now(); // Store the current time
+              GameState = "RUNNING";
+            }
+          break;
+          case "RUNNING":
+            GameTime = deltaTime(StartTime);
+            document.getElementById('text_gauge0').textContent = (GameTime/1000).toFixed(2)+" s";
+            if (HatsOff[0] && HatsOff[1] && HatsOff[2]) {
+              clearInterval(GameTimerID);
+              GameState = "SENDRESULT";
+              GameTimerID = setInterval(gameTimer, 1000)
+            }
+          break;
+          case "SENDRESULT":            // Waiting for TotalMax wind to register...
+            websocket.send('{"UpdateHiScoreEntry": {"Name" : "' + GameName + '", "Wind" : ' + TotalMax + ', "Time" : ' + GameTime + '}}');
+            clearInterval(GameTimerID);
+            GameState = "STOPANDRETURN";
+            GameTimerID = setInterval(gameTimer, 10000)
+          break;
+          case "STOPANDRETURN":
+            stopGame();
+            showHiScore();
+          default:  // Stop game
+            stopGame();
+          break;
+        }
+      }
+
+      function deltaTime(startTime) {
+        return Date.now() - startTime;
+      }
+
+      function startGame()  {
+        GameState = "WAITING_FOR_NO_WIND";
+        GameTimerID = setInterval(gameTimer, 50);
+      }
+
+      function stopGame() {
+        GameState = "";
+        clearInterval(GameTimerID);
+      }
+
+      function showGame() {
+        var highScoreGroup = document.getElementById('hiscore');
+        var gameGroup = document.getElementById('game');
+        gameGroup.style.visibility = 'visible';
+        highScoreGroup.style.visibility = 'hidden';
+      }
+
+      function showHiScore() {
+        var highScoreGroup = document.getElementById('hiscore');
+          var gameGroup = document.getElementById('game');
+          highScoreGroup.style.visibility = 'visible';
+          gameGroup.style.visibility = 'hidden';
+      }
+
+      function resetGameBoard()  {
+        document.getElementById('text_Name').textContent = "";
+        document.getElementById('text_gauge0').textContent = "";
+
+        LastValues = [0,0,0];
+        TotalMax = 0;
+        HatsOff = [false,false,false];
+
+        setGauge(0, 0);
+
+        for (var i = 0; i < 3; i++) {
+          setGauge(i+1, 0);
+          setHat(i+1, 0);
+        }
+      }
+
+      function onError(evt) {
+        console.log("ERROR: " + evt.data);
+      }
+
+      window.addEventListener("load", loadWindow, false);
+
+
+      // *********************
+      // Generating SVG:
+      // *********************
+
+      // Define the positions and sizes for the needle images
+      const needlePositions = [
+        { x: 1634, y: 767, width: 68, height: 186 },
+        { x: 339, y: 873, width: 45, height: 124 },
+        { x: 680, y: 873, width: 45, height: 124 },
+        { x: 1021, y: 873, width: 45, height: 124 }
+      ];
+
+      // This is the wind value in m/s which defines the max gauge read-out
+      const MaxWind = 3;  
+      
+      // This is the wind value in m/s which defines when the hat goes off the test dummies
+      const HatWindThreshold = MaxWind*5/6;  
+      
+      // Define trajectory for hats
+      const HatTrajectories = [
+      {
+          x: 233,
+          y: 130,
+          width: 290,
+          height: 239,
+          rotCenterX: 168,
+          rotCenterY: 114,
+          trajectory: [
+            { position: 0, x: 0, y: 0, angle: 0, wiggle: 0 },
+            { position: 500, x: -20, y: -50, angle: -20, wiggle: 10 },
+            { position: 600, x: -250, y: -70, angle: -180, wiggle: 0 },
+            { position: 1000, x: -250, y: 1000, angle: -360*2, wiggle: 0 },
+          ]
+        },
+        {
+          x: 555,
+          y: 89,
+          width: 333,
+          height: 271,
+          rotCenterX: 152,
+          rotCenterY: 126,
+          trajectory: [
+            { position: 0, x: 0, y: 0, angle: 0, wiggle: 0 },
+            { position: 500, x: 20, y: -50, angle: 20, wiggle: 10 },
+            { position: 600, x: 250, y: -70, angle: 180, wiggle: 0 },
+            { position: 1000, x: 2000, y: 1000, angle: 360*2, wiggle: 0 },
+          ]
+        },
+        {
+          x: 888,
+          y: 134,
+          width: 299,
+          height: 233,
+          rotCenterX: 139,
+          rotCenterY: 102,
+          trajectory: [
+            { position: 0, x: 0, y: 0, angle: 0, wiggle: 0 },
+            { position: 500, x: 20, y: -50, angle: 20, wiggle: 10 },
+            { position: 600, x: 250, y: -70, angle: 180, wiggle: 2 },
+            { position: 700, x: 350, y: 200, angle: 360, wiggle: 3 },
+            { position: 800, x: 150, y: 600, angle: 540, wiggle: 1 },
+            { position: 900, x: 250, y: 800, angle: 360*2, wiggle: 0 },
+            { position: 1000, x: 250, y: 1000, angle: 360*2.5, wiggle: 0 },
+          ]
+        }
+      ];
+
+      var LastValues = [0,0,0];
+      var TotalMax = 0;
+      var HatsOff = [false,false,false];
+
+      // Function to insert needle images
+      function insertNeedleImages() {
+        var gameGroup = document.getElementById('game');
+
+        // Loop through the needle positions and insert images
+        for (var i = 0; i < needlePositions.length; i++) {
+          var needle = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+          needle.setAttributeNS(null, 'href', 'gaugeneedle.png');
+          needle.setAttributeNS(null, 'width', needlePositions[i].width);
+          needle.setAttributeNS(null, 'height', needlePositions[i].height);
+          needle.setAttributeNS(null, 'x', needlePositions[i].x);
+          needle.setAttributeNS(null, 'y', needlePositions[i].y);
+          needle.setAttributeNS(null, 'id', 'needle'+i);
+          needle.setAttribute('visibility', 'hidden'); // To make it visible
+          gameGroup.appendChild(needle);
+
+          setNeedle(i, 0)
+        }
+      }
+
+      function setNeedle(i, value)  {
+        var needle = document.getElementById('needle'+i);
+        if (needle != null) {
+          if (value < 0)  {
+            value = 0;
+          }
+          if (value > 1000) {
+            value = 1000;
+          }
+          var angle = -110 + (value/1000*220);
+          needle.setAttribute('transform', 'rotate(' + angle + ' ' + (needlePositions[i].x+needlePositions[i].width*0.5) + ' ' + (needlePositions[i].y+needlePositions[i].height*0.81) + ')');
+          needle.setAttribute('visibility', 'visible'); // To make sure it's visible
+        }
+      }
+
+      function setGauge(i, wind)  {
+        setNeedle(i, wind * 1000/MaxWind)
+
+        var gaugeText = document.getElementById('text_gauge'+i);
+        if (gaugeText != null && (i>0 || GameState=="")) {
+          gaugeText.textContent = wind.toFixed(2) + " m/s"
+          gaugeText.setAttribute('visibility', 'visible'); // To make sure it's visible
+        }
+      }
+
+
+      function setHat(i, wind)  {
+
+        if (i>=1 && i<=3) {
+          if (!HatsOff[i-1]) {
+            positionFromWind = wind * 500/HatWindThreshold;
+            if (positionFromWind > 500) {
+              HatsOff[i-1] = true;
+              for (var a = 0; a <= 500; a=a+10) {
+                animateHat(i, a);
+              }
+            } else {
+              setHatPosition(i, positionFromWind);
+            }
+          }
+        }
+      }
+
+      function animateHat(number, a) {
+        setTimeout(function() {
+          setHatPosition(number, 500+a);
+        }, a * 4);
+      }
+
+      function setHatPosition(i, positionFromWind)  {
+        var hatObj = document.getElementById('hat'+i);
+        if (hatObj != null && HatTrajectories.hasOwnProperty(i-1)) {
+          var modding = calculateProportionalValues(HatTrajectories[i-1].trajectory, positionFromWind);
+          if (modding != null)  {
+            var newX = HatTrajectories[i-1].x + modding.x;
+            var newY = HatTrajectories[i-1].y + modding.y;
+            hatObj.setAttribute('x', newX);
+            hatObj.setAttribute('y', newY);
+            hatObj.setAttribute('transform', 'rotate(' + modding.angle + ' ' + (newX + HatTrajectories[i-1].rotCenterX) + ' ' + (newY + HatTrajectories[i-1].rotCenterY) + ')');
+            
+            console.log(i, positionFromWind, modding);
+          }
+        }
+      }
+
+      // Function to calculate proportional values
+      function calculateProportionalValues(trajectory, position) {
+        // Iterate over the trajectory array
+        for (var i = 0; i < trajectory.length - 1; i++) {
+          var point1 = trajectory[i];
+          var point2 = trajectory[i + 1];
+          
+          // Check if position is between the current and next point
+          if (position >= point1.position && position <= point2.position) {
+            // Calculate proportional value
+            var proportionalValue = (position - point1.position) / (point2.position - point1.position);
+            
+            // Calculate proportional values of x, y, angle, and wiggle
+            var x = point1.x + proportionalValue * (point2.x - point1.x);
+            var y = point1.y + proportionalValue * (point2.y - point1.y);
+            var angle = point1.angle + proportionalValue * (point2.angle - point1.angle);
+            var wiggle = point1.wiggle + proportionalValue * (point2.wiggle - point1.wiggle);
+            
+            // Add random variation to x, y, and angle based on wiggle
+            x += Math.random() * wiggle * 2 - wiggle;
+            y += Math.random() * wiggle * 2 - wiggle;
+            angle += Math.random() * wiggle * 2 - wiggle;
+            
+            // Return calculated values
+            return { x: x, y: y, angle: angle };
+          }
+        }
+        
+        // If position is outside the trajectory range, return null
+        return null;
+      }
+
+
+          //   // Function to rotate the needle over time
+          //   function rotateNeedle(degrees, duration) {
+          // var needle = document.getElementById('gaugeneedle1');
+          // var startTime = performance.now();
+          // var endTime = startTime + duration;
+          // var startAngle = 0;
+
+          // function update() {
+          //     var currentTime = performance.now();
+          //     var elapsedTime = currentTime - startTime;
+          //     var progress = elapsedTime / duration;
+          //     var angle = startAngle + (degrees * progress);
+          //     needle.setAttribute('transform', 'rotate(' + angle + ' 1668 918)');
+
+          //     if (currentTime < endTime) {
+          //         requestAnimationFrame(update);
+          //     }
+          // }
+
+          // requestAnimationFrame(update);
+
+
+      function renderApplicationSVG(appCanvas) {
+        svg = document.getElementById("appcanvas"); // Get main SVG object
+
+        // Clean out all its contents and create background:
+        while (svg.firstChild) {
+          svg.removeChild(svg.lastChild);
+        }
+        svg.setAttribute(
+          "viewBox",
+          `0 0 ` + appCanvas.CanvasWidth + ` ` + appCanvas.CanvasHeight
+        );
+
+        if (appCanvas.CanvasBackgroundElements != "") {
+          addSVGRaw(appCanvas.CanvasBackgroundElements, svg);
+        }
+
+        // Defines shading - can be inherited by any nested SVG actually. Nice.
+        var defs = appendSVGChild("defs", svg, {});
+        var radialGradient = appendSVGChild("radialGradient", defs, {
+          id: "buttonShading",
+        });
+        appendSVGChild("stop", radialGradient, {
+          offset: "10%",
+          style: "stop-color:rgba(0,0,0,0);",
+        });
+        appendSVGChild("stop", radialGradient, {
+          offset: "95%",
+          style: "stop-color:rgba(0,0,0,0.3);",
+        });
+      }
+
+      function defVal(input, def) {
+        if (input == undefined) {
+          return def;
+        } else {
+          return input;
+        }
+      }
+
+      // *********************
+      // Utility functions:
+      // *********************
+
+      // Used to change Z-index
+      function insertAfter(newNode, referenceNode) {
+        referenceNode.parentNode.insertBefore(
+          newNode,
+          referenceNode.nextSibling
+        );
+      }
+
+      // Generates new SVG element the right way:
+      function appendSVGChild(elementType, target, attributes = {}, text = "") {
+        const element = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          elementType
+        );
+        Object.entries(attributes).map((a) => element.setAttribute(a[0], a[1]));
+        if (text) {
+          const textNode = document.createTextNode(text);
+          element.appendChild(textNode);
+        }
+        target.appendChild(element);
+        return element;
+      }
+
+      // Takes Raw SVG input and converts to elements which gets appended to the svg passed
+      function addSVGRaw(textBasedElements, svg) {
+        var importDoc = new DOMParser().parseFromString(
+          '<svg xmlns="http://www.w3.org/2000/svg">' +
+            textBasedElements +
+            "</svg>",
+          "application/xml"
+        );
+
+        // console.log(textBasedElements)
+        svgContainerForImport = importDoc.querySelector("svg");
+        while (svgContainerForImport.firstChild) {
+          //console.log(svgContainerForImport.firstChild);
+          svg.appendChild(svgContainerForImport.firstChild);
+        }
+      }
+
+      function handleRightClick(event) {
+          // Prevent the default browser context menu from appearing
+          event.preventDefault();
+      }
+
+    </script>
+  </head>
+
+  <body oncontextmenu="handleRightClick(event)">
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 1920 1080"
+      id="appcanvas"
+      preserveAspectRatio="xMidYMid meet"
+    >
+    <defs>
+      <filter id="dropshadow" height="130%">
+        <feDropShadow dx="3" dy="3" stdDeviation="2" flood-color="#000000" flood-opacity="0.4"/>
+      </filter>
+    </defs>
+    <g id="game">
+      <image xlink:href="gameback.jpg" width="1920" height="1080" />
+      <text x="1664" y="630" font-family="sans-serif" font-size="80" font-weight="bold" text-anchor="middle" fill="white" filter="url(#dropshadow)" id="text_Name">[_Name_]</text>
+
+      <text x="1668" y="1050" font-family="sans-serif" font-size="60" font-weight="bold" text-anchor="middle" fill="white" filter="url(#dropshadow)" id="text_gauge0">0:00:00</text>
+      <text x="361" y="1053" font-family="sans-serif" font-size="30" font-weight="bold" text-anchor="middle" fill="white" filter="url(#dropshadow)" id="text_gauge1">0.00 m/s</text>
+      <text x="702" y="1053" font-family="sans-serif" font-size="30" font-weight="bold" text-anchor="middle" fill="white" filter="url(#dropshadow)" id="text_gauge2">0.00 m/s</text>
+      <text x="1043" y="1053" font-family="sans-serif" font-size="30" font-weight="bold" text-anchor="middle" fill="white" filter="url(#dropshadow)" id="text_gauge3">0.00 m/s</text>
+
+      <image xlink:href="hat1.png" width="290" height="239" x="233" y="130" id="hat1"/>
+      <image xlink:href="hat3.png" width="299" height="233" x="888" y="134" id="hat3"/>
+      <image xlink:href="hat2.png" width="333" height="271" x="555" y="89" id="hat2"/>
+    </g>
+    <g id="hiscore">
+      <image xlink:href="hiscore.jpeg" width="1920" height="1080" />
+      
+      <text x="345" y="270" font-family="sans-serif" font-size="70" font-weight="bold" text-anchor="middle" fill="black" filter="" id="text_Name1">[_NAME_]</text>
+      <text x="790" y="275" font-family="sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="black" filter="url(#dropshadow)" id="text_Time1">0:00.0s</text>
+      <text x="1060" y="235" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black">Wind:</text>
+      <text x="1060" y="280" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black" id="text_Wind1">0.00 m/s</text>
+
+      <text x="345" y="450" font-family="sans-serif" font-size="70" font-weight="bold" text-anchor="middle" fill="black" filter="" id="text_Name2">[_NAME_]</text>
+      <text x="790" y="455" font-family="sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="black" filter="url(#dropshadow)" id="text_Time2">0:00.0s</text>
+      <text x="1060" y="415" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black">Wind:</text>
+      <text x="1060" y="460" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black" id="text_Wind2">0.00 m/s</text>
+
+      <text x="345" y="630" font-family="sans-serif" font-size="70" font-weight="bold" text-anchor="middle" fill="black" filter="" id="text_Name3">[_NAME_]</text>
+      <text x="790" y="635" font-family="sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="black" filter="url(#dropshadow)" id="text_Time3">0:00.0s</text>
+      <text x="1060" y="595" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black">Wind:</text>
+      <text x="1060" y="640" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black" id="text_Wind3">0.00 m/s</text>
+
+      <text x="345" y="810" font-family="sans-serif" font-size="70" font-weight="bold" text-anchor="middle" fill="black" filter="" id="text_Name4">[_NAME_]</text>
+      <text x="790" y="815" font-family="sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="black" filter="url(#dropshadow)" id="text_Time4">0:00.0s</text>
+      <text x="1060" y="775" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black">Wind:</text>
+      <text x="1060" y="820" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black" id="text_Wind4">0.00 m/s</text>
+
+      <text x="345" y="990" font-family="sans-serif" font-size="70" font-weight="bold" text-anchor="middle" fill="black" filter="" id="text_Name5">[_NAME_]</text>
+      <text x="790" y="995" font-family="sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="black" filter="url(#dropshadow)" id="text_Time5">0:00.0s</text>
+      <text x="1060" y="955" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black">Wind:</text>
+      <text x="1060" y="1000" font-family="sans-serif" font-size="40" text-anchor="middle" fill="black" id="text_Wind5">0.00 m/s</text>
+    </g>
+  </svg>    
+
+    <script>
+      insertNeedleImages();
+      
+      // This is here for testing and tuning the trajectory settings by mouse movements
+      //  // Add event listener for mousemove event on the window
+      // window.addEventListener('mousemove', function(event) {
+      //   // Get mouse coordinates relative to the viewport
+      //   var mouseX = event.clientX;
+      //   var mouseY = event.clientY;
+
+      //   // Output mouse coordinates
+      //   console.log("Mouse X:", mouseX);
+      //   setHatPosition(3, mouseX)
+      //   //console.log("Mouse Y:", mouseY);
+      // });
+      
+    </script>
+  </body>
+</html>
